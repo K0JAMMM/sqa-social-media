@@ -55,6 +55,6 @@ class AuthControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message", is("E-mail já cadastrado")));
+                .andExpect(jsonPath("$.message", is("E-mail já está em uso")));
     }
 }

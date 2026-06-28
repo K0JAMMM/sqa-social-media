@@ -40,7 +40,9 @@ describe("ResetPassword", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enviar Email" }));
 
     await waitFor(() => {
-      expect(screen.getByText("E-mail enviado com sucesso")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Email enviado com sucesso/)
+      ).toBeInTheDocument();
     });
   });
 });
