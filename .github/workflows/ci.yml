@@ -1,0 +1,158 @@
+name: CI
+
+# Dispara obrigatoriamente em todo Pull Request com destino à branch main
+# (abertura, novos commits/sincronização e reabertura).
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) Testes de caixa-branca da API (JUnit + Spring Boot Test, banco H2 em memória)
+  # ---------------------------------------------------------------------------
+  api-unit-tests:
+    name: Testes unitários/integração - API (Java)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Permitir execução do Maven Wrapper
+        working-directory: api
+        run: chmod +x ./mvnw
+
+      - name: Executar testes da API (perfil de teste com H2)
+        working-directory: api
+        run: ./mvnw -B test
+
+  # ---------------------------------------------------------------------------
+  # 2) Testes de caixa-branca do Client (Jest + Testing Library)
+  # ---------------------------------------------------------------------------
+  client-unit-tests:
+    name: Testes unitários - Client (Jest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Instalar dependências do client
+        working-directory: client
+        run: npm ci
+
+      - name: Executar testes unitários (Jest)
+        working-directory: client
+        run: npm test -- --ci
+
+  # ---------------------------------------------------------------------------
+  # 3) Testes de caixa-preta (E2E + API) com o sistema em execução
+  #    Sobe MySQL, inicia a API e o Client, e roda a suíte do Playwright.
+  # ---------------------------------------------------------------------------
+  e2e-tests:
+    name: Testes E2E e de API (Playwright)
+    runs-on: ubuntu-latest
+    needs: [api-unit-tests, client-unit-tests]
+
+    # Banco de dados necessário para a API em runtime (signup/signin/like).
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: social_media
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      # ---- Inicia a API (Spring Boot) em segundo plano ----
+      - name: Iniciar a API
+        working-directory: api
+        env:
+          SPRING_DATASOURCE_URL: jdbc:mysql://127.0.0.1:3306/social_media?allowPublicKeyRetrieval=true&useSSL=false
+          SPRING_DATASOURCE_USERNAME: root
+          SPRING_DATASOURCE_PASSWORD: root
+        run: |
+          chmod +x ./mvnw
+          ./mvnw -B spring-boot:run > api.log 2>&1 &
+          echo "Aguardando a API responder na porta 8080..."
+          npx --yes wait-on -t 180000 http://localhost:8080/posts
+          echo "API no ar."
+
+      # ---- Instala e inicia o Client (Next.js) em segundo plano ----
+      - name: Iniciar o Client
+        working-directory: client
+        env:
+          NEXT_PUBLIC_BASE_URL: http://localhost:8080
+        run: |
+          npm ci
+          npm run dev > client.log 2>&1 &
+          echo "Aguardando o Client responder na porta 3000..."
+          npx --yes wait-on -t 180000 http://localhost:3000
+          echo "Client no ar."
+
+      # ---- Instala a ferramenta de testes e os navegadores ----
+      - name: Instalar dependências de teste e o Chromium
+        working-directory: tests
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+
+      # ---- Executa a suíte completa (E2E + API black-box) ----
+      - name: Executar testes Playwright (E2E + API)
+        working-directory: tests
+        env:
+          BASE_URL: http://localhost:3000
+          API_URL: http://localhost:8080
+        run: npm test
+
+      # ---- Diagnóstico: publica logs e relatório mesmo se algo falhar ----
+      - name: Publicar relatório do Playwright
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/playwright-report
+          retention-days: 7
+
+      - name: Mostrar logs em caso de falha
+        if: failure()
+        run: |
+          echo "===== LOG DA API ====="
+          cat api/api.log || true
+          echo "===== LOG DO CLIENT ====="
+          cat client/client.log || true
