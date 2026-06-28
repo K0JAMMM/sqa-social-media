@@ -97,7 +97,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
 
       # ---- Inicia a API (Spring Boot) em segundo plano ----
       - name: Iniciar a API
